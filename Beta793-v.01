@@ -1,0 +1,200 @@
+#include "RadioCountToLeds.h"
+ 
+configuration RadioAccelAppC {}
+implementation {
+  components MainC, RadioAccelC as App, LedsC;
+  components new AMSenderC(AM_RADIO_COUNT_MSG);
+  components new AMReceiverC(AM_RADIO_COUNT_MSG);
+  components new TimerMilliC();
+  components ActiveMessageC;
+ 
+  App.Boot -> MainC.Boot;
+ 
+  App.AMSend -> AMSenderC;
+  App.AMControl -> ActiveMessageC;
+  App.Leds -> LedsC;
+  App.Packet -> AMSenderC;
+  components new ADXL345C();
+  App.IntSource -> ADXL345C.IntSource;
+  App.AccelControl -> ADXL345C.SplitControl;
+  App.IntAccel1 -> ADXL345C.Int1;
+  App.ADXLControl -> ADXL345C.ADXL345Control;
+  App.Axis -> ADXL345C.Register;
+  App.X -> ADXL345C.X;
+  App.Y -> ADXL345C.Y;
+ 
+  components UserButtonC;
+  App.Button -> UserButtonC;
+ 
+}
+The RacioAccelC.nc:
+
+#include "RadioCountToLeds.h"
+#include "ADXL345.h"
+#include "UserButton.h"
+ 
+module RadioAccelC @safe() {
+  uses {
+    interface Leds;
+    interface Boot;
+    interface AMSend;
+    interface SplitControl as AMControl;
+    interface Packet;
+    interface Read<uint8_t> as IntSource;  
+    interface Read<uint8_t> as Axis;
+    interface Read<uint16_t> as X;
+    interface Read<uint16_t> as Y;
+    interface Notify<adxlint_state_t> as IntAccel1;
+    interface ADXL345Control as ADXLControl;
+    interface SplitControl as AccelControl;
+    interface Notify<button_state_t> as Button;
+  }
+}
+implementation {
+ 
+  message_t packet;
+ 
+  bool locked;
+  uint16_t counter  = 0;
+  uint16_t counter1 = 0;
+ 
+  event void Boot.booted() {
+    call Button.enable();
+    call AMControl.start();
+  }
+ 
+  event void AMControl.startDone(error_t err) {
+    if (err == SUCCESS) {
+      call AccelControl.start();
+    }
+    else {
+      call AMControl.start();
+    }
+  }
+ 
+  event void Button.notify(button_state_t val) {
+  	if(val == BUTTON_RELEASED) {
+		counter=0;
+		if (locked) {
+		  return;
+		}
+		else {
+		  radio_count_msg_t* rcm = (radio_count_msg_t*)call Packet.getPayload(&packet, sizeof(radio_count_msg_t));
+		  if (rcm == NULL) {
+		    return;
+		  }
+		  rcm->counter = counter;
+		  if (call AMSend.send(AM_BROADCAST_ADDR, &packet, sizeof(radio_count_msg_t)) == SUCCESS) {
+		    locked = TRUE;
+		  }
+		}
+	} else {
+	}
+  }
+ 
+ 
+  event void IntAccel1.notify(adxlint_state_t val) {
+    call ADXLControl.setReadAddress(ADXL345_ACT_TAP_STATUS);
+    call Axis.read();
+  }
+ 
+ 
+  event void AccelControl.startDone(error_t err) {
+	if(err==SUCCESS)
+	{
+	  error_t e;
+	  e = call ADXLControl.setInterrups( ADXLINT_SINGLE_TAP ); 
+	}
+	else
+	{
+	  call Leds.led0On();
+	  call Leds.led1On();
+	  call Leds.led2On();
+	}
+  }
+ 
+  event void AMSend.sendDone(message_t* bufPtr, error_t error) {
+    if (&packet == bufPtr) {
+      locked = FALSE;
+    }
+  }
+ 
+  event void ADXLControl.setInterruptsDone(){
+	call ADXLControl.setIntMap(0);
+  }
+ 
+  event void ADXLControl.setIntMapDone(){
+	call IntAccel1.enable();	//this will enable the interruptions
+	call IntSource.read();		//this will clear the interruption
+  }
+ 
+  event void Axis.readDone(error_t result, uint8_t data){
+    if (data & 0x04)
+    { 
+      call X.read();
+    }
+    if (data & 0x02)
+    {
+      call Y.read();
+    }
+    if (data & 0x01)
+    {
+      call IntSource.read();	//this will clear the interruption
+    }
+  }
+ 
+  event void X.readDone(error_t result, uint16_t data){
+    counter ^= 0x7;
+    if (locked) {
+      return;
+    }
+    else {
+      radio_count_msg_t* rcm = (radio_count_msg_t*)call Packet.getPayload(&packet, sizeof(radio_count_msg_t));
+      if (rcm == NULL) {
+	return;
+      }
+      rcm->counter = counter;
+      if (call AMSend.send(2, &packet, sizeof(radio_count_msg_t)) == SUCCESS) {
+	locked = TRUE;
+      }
+    }
+    call Leds.led0Toggle();
+    call IntSource.read();	//this will clear the interruption
+  }
+ 
+  event void Y.readDone(error_t result, uint16_t data){
+    counter1 ^= 0x7;
+    if (locked) {
+      return;
+    }
+    else {
+      radio_count_msg_t* rcm = (radio_count_msg_t*)call Packet.getPayload(&packet, sizeof(radio_count_msg_t));
+      if (rcm == NULL) {
+	return;
+      }
+      rcm->counter = counter1;
+      if (call AMSend.send(4, &packet, sizeof(radio_count_msg_t)) == SUCCESS) {
+	locked = TRUE;
+      }
+    }
+    call Leds.led1Toggle();
+    call IntSource.read();	//this will clear the interruption
+  }
+ 
+  event void ADXLControl.setDurationDone() { }				//not used
+ 
+  event void ADXLControl.setWindowDone() { }				//not used
+ 
+  event void ADXLControl.setLatentDone() { }				//not used
+ 
+  event void ADXLControl.setRegisterDone() { }				//not used
+ 
+  event void ADXLControl.setRangeDone() { }				//not used
+ 
+  event void IntSource.readDone(error_t result, uint8_t data) { }	//not used
+ 
+  event void AccelControl.stopDone(error_t err) { }			//not used
+ 
+  event void AMControl.stopDone(error_t err) { }			//not used
+ 
+}
