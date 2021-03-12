@@ -1,0 +1,1342 @@
+Advanced Code Examples with Z1
+Contents [hide]
+1 Advanced use of the Accelerometer: using hardware interruptions
+2 High Speed ADC Sampling with DMA and Tinyos
+3 Advanced serial communication
+3.1 Basics
+3.1.1 Using Listen
+3.1.2 Using SerialForwarder
+3.1.2.1 Building it
+3.1.2.2 Running it
+3.1.3 Motecom
+3.2 Programs
+3.2.1 Serial Write
+3.2.2 Serial Read
+3.2.2.1 PC-side app
+3.2.2.2 Z1 app
+3.2.2.3 Building, programming and sending
+3.3 More information
+3.3.1 Modifying the java sdk
+3.3.2 TinyOS Documentation
+4 Using GPIO
+5 Mashups using several devices
+5.1 Radio + Accelerometer
+5.1.1 Receiver App
+5.1.2 Sender App
+6 Obtain a higher sampling rate with the ADXL345 or I2C sensor
+7 Include C functions in nesC code
+8 C programming
+8.1 Led Blink
+8.1.1 Files
+8.1.1.1 led.c
+8.1.1.2 Makefile
+8.2 Led Blink using interruptions
+8.2.1 Files
+8.2.1.1 wdt.c
+8.2.1.2 Makefile
+8.3 Printf using UART port
+8.3.1 Files
+8.3.1.1 print.c
+8.3.1.2 Makefile
+Advanced use of the Accelerometer: using hardware interruptions
+Z1 uses the ADXL345 accelerometer, this accelerometer is capable of sending interrupts to the processor that we can capture with events and act accordingly. This sample program will toggle the red led when the Z1 detects a single tap, it will toggle the green led when detects a double tap and it will toggle the blue led if detects that the device is in free fall. The first versions of the driver don't support hardware interruptions, the first version to support hardware interruptions for the adxl345 is the 0.0.1-9.
+
+The program consists on 3 files: Makefile, IntAccelAppC.nc and IntAccelC.nc
+
+Makefile:
+
+COMPONENT=IntAccelAppC
+include $(MAKERULES)
+IntAccelAppC.nc:
+
+configuration IntAccelAppC
+{
+}
+implementation
+{
+  components MainC, IntAccelC as App;
+  App -> MainC.Boot;
+ 
+  components LedsC;
+  App.Leds -> LedsC;
+ 
+  components new ADXL345C();
+  App.IntSource -> ADXL345C.IntSource;
+  App.AccelControl -> ADXL345C.SplitControl;
+  App.IntAccel1 -> ADXL345C.Int1;
+  App.IntAccel2 -> ADXL345C.Int2;
+  App.ADXLControl -> ADXL345C.ADXL345Control;
+ 
+}
+IntAccelC.nc:
+
+#include "ADXL345.h"
+ 
+module IntAccelC
+{
+  uses interface Boot;
+  uses interface Leds;
+  uses interface Read<uint8_t> as IntSource; 
+  uses interface SplitControl as AccelControl;  
+  uses interface Notify<adxlint_state_t> as IntAccel1;
+  uses interface Notify<adxlint_state_t> as IntAccel2;
+  uses interface ADXL345Control as ADXLControl;
+ 
+}
+implementation
+{
+  bool source_int2=FALSE;
+ 
+  event void Boot.booted()
+  {
+    call AccelControl.start();
+  }
+ 
+  event void IntAccel1.notify(adxlint_state_t val) {
+	source_int2=FALSE;
+	call Leds.led0Toggle();
+	call IntSource.read();		//this will clear the interruption
+  }
+ 
+  event void IntAccel2.notify(adxlint_state_t val) {
+	source_int2=TRUE;
+	call IntSource.read();		//this will clear the interruption;
+  }
+ 
+  event void AccelControl.startDone(error_t err) {
+	call ADXLControl.setInterrups(
+		  ADXLINT_DOUBLE_TAP |
+		  ADXLINT_SINGLE_TAP | 
+		  ADXLINT_FREE_FALL  ); 
+  }
+ 
+  event void AccelControl.stopDone(error_t err) {
+  }
+ 
+  event void IntSource.readDone(error_t result, uint8_t data){
+	if(source_int2) {
+	  if(data & ADXLINT_FREE_FALL) call Leds.led2Toggle();
+	  else call Leds.led1Toggle();
+	}
+  }
+ 
+  event void ADXLControl.setInterruptsDone(error_t error){
+	call ADXLControl.setIntMap(ADXLINT_DOUBLE_TAP | ADXLINT_FREE_FALL);
+  }
+ 
+  event void ADXLControl.setIntMapDone(error_t error){
+	call IntAccel1.enable();
+	call IntAccel2.enable();
+	call IntSource.read();		//this will clear the interruption
+  }
+ 
+  event void ADXLControl.setDurationDone(error_t error) { } //not used
+ 
+  event void ADXLControl.setWindowDone(error_t error) { } //not used
+ 
+  event void ADXLControl.setLatentDone(error_t error) { } //not used
+ 
+  event void ADXLControl.setRegisterDone(error_t error) { } //not used
+ 
+  event void ADXLControl.setRangeDone(error_t error) { }  //not used
+ 
+  event void ADXLControl.setReadAddressDone(error_t error) { }  //not used 
+ 
+}
+The full code can be downloaded using svn:
+
+svn co https://zolertia.svn.sourceforge.net/svnroot/zolertia/tinyos-2.1.1/apps/IntAccel IntAccel
+High Speed ADC Sampling with DMA and Tinyos
+Thanks to the DMA implemented in the msp430, it is possible to use in conjunction with TimerA to perform High Speed sampling.
+
+When using DMA and TimerA for ADC sampling some flags have to be enabled in makefile:
+
+CFLAGS += -DADC12_TIMERA_ENABLED
+CFLAGS += -DADC12_ONLY_WITH_DMA
+Instead of using the common AdcRead component, it is necessary to go a level below and use the Msp430Adc12ClientAutoDMAC() component:
+
+  components new Msp430Adc12ClientAutoDMAC() as Fadc;
+  App.overflow -> Fadc;
+  App.adc -> Fadc;
+  App.Resource -> Fadc;
+You can grab the code from Zolertia svn:
+
+svn co https://zolertia.svn.sourceforge.net/svnroot/zolertia/tinyos-2.1.1/apps/FastADC FastADC
+
+Advanced serial communication
+Basics
+Using Listen
+Listen is a java utility included in the java sdk of tinyos. This application outputs the hex dump of all the messages arriving to the interface specified. There are 3 ways of indicating the data source:
+
+Specifying the -comm option. Listen will try to gather data from the source specified. Example: -comm serial@/dev/ttyUSB0:115200 will try to gather data from the serial port in /dev/ttyUSB0 that's sending data at 115200bps
+Without indicating a data source without a MOTECOM environment variable. Listen will try to gather data from a serialforwarder running on port 9002.
+Without indicating a data source but having a MOTECOM environment variable. Listen will try to gather data from whatever is stored in MOTECOM
+To run it once tinyos is instaled run
+
+java net.tinyos.tools.Listen -comm serial@/dev/ttyUSB0:115200
+This could be an output of the Listen command:
+
+serial@/dev/ttyUSB0:115200: resynchronising
+00 FF FF 00 00 02 00 45 00 05 
+00 FF FF 00 00 02 00 45 00 06 
+00 FF FF 00 00 02 00 45 00 07 
+00 FF FF 00 00 02 00 45 00 08 
+00 FF FF 00 00 02 00 45 00 09 
+00 FF FF 00 00 02 00 45 00 0A 
+00 FF FF 00 00 02 00 45 00 0B 
+00 FF FF 00 00 02 00 45 00 0C 
+00 FF FF 00 00 02 00 45 00 0D 
+00 FF FF 00 00 02 00 45 00 0E 
+00 FF FF 00 00 02 00 45 00 0F 
+00 FF FF 00 00 02 00 45 00 10 
+
+If you get an error reffering to the system being unable to find the TOScomm JNI library, it means that probably the Java Native Interface (JNI that controls the serial port was not installed correctly (or installed at all). We run the following command to proper install:
+
+sudo tos-install-jni
+Using SerialForwarder
+Serialforwarder is an application used to redirect the serial communication to a tcp connection. It's extremely useful if you need to receive the serial data from a remote computer or send the data to different programs.
+
+Building it
+Go to /opt/tinyos-2.1.1/support/sdk/c/sf and run
+
+./bootstrap
+./configure
+make
+Note: If you get a mistake when running the bootstrap script like:
+
+./bootstrap: line 2: aclocal: command not found
+./bootstrap: line 3: autoheader: command not found
+./bootstrap: line 4: autoconf: command not found
+./bootstrap: line 5: automake: command not found
+You need to install the follow packages:
+
+sudo apt-get install autoconf automake
+Running it
+The default Serial Forwarder port is 9002, the device will usually be /dev/ttyUSB0 and the baudrate for the z1 is 115200
+
+./sf <port> <device> <baudrate>
+Motecom
+Listen and Serial Forwarder support the MOTECOM environment variable. Instead of using the -comm option you can create a MOTECOM variable that will set the default source for this programs you can set it running this in the terminal:
+
+export MOTECOM=serial@/dev/ttyUSB0:115200
+Programs
+Here you can find some example programs for the Z1 that use the serial port
+
+Serial Write
+This program will send a package through the serial port every second. To build the program we'll need to create 4 files: SerialExample.h, SerialWriteAppC.nc, SerialWriteC.nc and the Makefile. The Makefile:
+
+COMPONENT=SerialWriteAppC
+include $(MAKERULES)
+The SerialExample.h:
+
+typedef nx_struct serial_example_msg {
+  nx_uint16_t counter;
+} serial_example_msg_t;
+enum {
+  AM_SERIAL_EXAMPLE_MSG = 0x45,
+};
+The SerialWriteAppC.nc:
+
+configuration SerialWriteAppC {}
+implementation {
+  components SerialWriteC as App;
+  components LedsC;
+  components MainC;
+  components SerialActiveMessageC as AM;
+  components new TimerMilliC();
+ 
+  App.Boot -> MainC.Boot;
+  App.Control -> AM;
+  App.AMSend -> AM.AMSend[AM_SERIAL_EXAMPLE_MSG];
+  App.Leds -> LedsC;
+  App.TimerSerialWrite -> TimerMilliC;
+  App.Packet -> AM;
+}
+And the SerialWriteC.nc:
+
+#include "Timer.h"
+#include "SerialExample.h"
+ 
+module SerialWriteC {
+  uses interface SplitControl as Control;
+  uses interface Leds;
+  uses interface Boot;
+  uses interface AMSend;
+  uses interface Timer<TMilli> as TimerSerialWrite;
+  uses interface Packet;
+}
+implementation {
+ 
+  message_t packet;
+ 
+  bool locked = FALSE;
+  uint16_t counter = 0;
+ 
+  event void Boot.booted() {
+    call Control.start();
+  }
+ 
+  event void TimerSerialWrite.fired() {
+    counter++;
+    if (locked) {
+      return;
+    }
+    else {
+      serial_example_msg_t* rcm = (serial_example_msg_t*)call Packet.getPayload(&packet, sizeof(serial_example_msg_t));
+      if (rcm == NULL) {return;}
+      if (call Packet.maxPayloadLength() < sizeof(serial_example_msg_t)) {
+	return;
+      }
+ 
+      rcm->counter = counter;
+      if (call AMSend.send(AM_BROADCAST_ADDR, &packet, sizeof(serial_example_msg_t)) == SUCCESS) {
+	locked = TRUE;
+      }
+    }
+  }
+ 
+  event void AMSend.sendDone(message_t* bufPtr, error_t error) {
+    if (&packet == bufPtr) {
+      locked = FALSE;
+    }
+  }
+ 
+  event void Control.startDone(error_t err) {
+    if (err == SUCCESS) {
+      call TimerSerialWrite.startPeriodic(1000);
+    }
+  }
+  event void Control.stopDone(error_t err) {}
+}
+To compile the program and program the Z1 run:
+
+make z1 install
+Serial Read
+This program will read a package from the serial interface and set the leds according to the message received
+
+PC-side app
+Create a TestSerial.java file containing this:
+
+/*									tab:4
+ * "Copyright (c) 2005 The Regents of the University  of California.  
+ * All rights reserved.
+ *
+ * Permission to use, copy, modify, and distribute this software and
+ * its documentation for any purpose, without fee, and without written
+ * agreement is hereby granted, provided that the above copyright
+ * notice, the following two paragraphs and the author appear in all
+ * copies of this software.
+ * 
+ * IN NO EVENT SHALL THE UNIVERSITY OF CALIFORNIA BE LIABLE TO ANY
+ * PARTY FOR DIRECT, INDIRECT, SPECIAL, INCIDENTAL, OR CONSEQUENTIAL
+ * DAMAGES ARISING OUT OF THE USE OF THIS SOFTWARE AND ITS
+ * DOCUMENTATION, EVEN IF THE UNIVERSITY OF CALIFORNIA HAS BEEN
+ * ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * 
+ * THE UNIVERSITY OF CALIFORNIA SPECIFICALLY DISCLAIMS ANY WARRANTIES,
+ * INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY
+ * AND FITNESS FOR A PARTICULAR PURPOSE.  THE SOFTWARE PROVIDED HEREUNDER IS
+ * ON AN "AS IS" BASIS, AND THE UNIVERSITY OF CALIFORNIA HAS NO OBLIGATION TO
+ * PROVIDE MAINTENANCE, SUPPORT, UPDATES, ENHANCEMENTS, OR MODIFICATIONS."
+ *
+ */
+ 
+/**
+ * Java-side application for testing serial port communication.
+ * 
+ *
+ * @author Phil Levis <pal@cs.berkeley.edu>
+ * @date August 12 2005
+ */
+ 
+import java.io.IOException;
+ 
+import net.tinyos.message.*;
+import net.tinyos.packet.*;
+import net.tinyos.util.*;
+ 
+public class TestSerial implements MessageListener {
+ 
+  private MoteIF moteIF;
+ 
+  public TestSerial(MoteIF moteIF) {
+    this.moteIF = moteIF;
+    this.moteIF.registerListener(new SerialReadMsg(), this);
+  }
+ 
+  public void sendPackets() {
+    int counter = 0;
+    SerialReadMsg payload = new SerialReadMsg();
+ 
+    try {
+      while (true) {
+	System.out.println("Sending packet " + counter);
+	payload.set_counter(counter);
+	moteIF.send(0, payload);
+	counter++;
+	try {Thread.sleep(1000);}
+	catch (InterruptedException exception) {}
+      }
+    }
+    catch (IOException exception) {
+      System.err.println("Exception thrown when sending packets. Exiting.");
+      System.err.println(exception);
+    }
+  }
+ 
+  public void messageReceived(int to, Message message) {
+    SerialReadMsg msg = (SerialReadMsg)message;
+    System.out.println("Received packet sequence number " + msg.get_counter());
+  }
+ 
+  private static void usage() {
+    System.err.println("usage: TestSerial [-comm <source>]");
+  }
+ 
+  public static void main(String[] args) throws Exception {
+    String source = null;
+    if (args.length == 2) {
+      if (!args[0].equals("-comm")) {
+	usage();
+	System.exit(1);
+      }
+      source = args[1];
+    }
+    else if (args.length != 0) {
+      usage();
+      System.exit(1);
+    }
+ 
+    PhoenixSource phoenix;
+ 
+    if (source == null) {
+      phoenix = BuildSource.makePhoenix(PrintStreamMessenger.err);
+    }
+    else {
+      phoenix = BuildSource.makePhoenix(source, PrintStreamMessenger.err);
+    }
+ 
+    MoteIF mif = new MoteIF(phoenix);
+    TestSerial serial = new TestSerial(mif);
+    serial.sendPackets();
+  }
+ 
+ 
+}
+Z1 app
+For this app the Makefile will be far more complicated than usual because the Makefile will create java files necessary to interact with the Z1.
+
+COMPONENT=SerialReadAppC
+BUILD_EXTRA_DEPS += SerialRead.class TestSerial.class
+CLEAN_EXTRA = *.class SerialReadMsg.java
+ 
+CFLAGS += -I$(TOSDIR)/lib/T2Hack
+ 
+SerialRead.class: $(wildcard *.java) SerialReadMsg.java
+	javac -target 1.4 -source 1.4 *.java
+ 
+SerialReadMsg.java:
+	mig java -target=null $(CFLAGS) -java-classname=SerialReadMsg SerialExample.h serial_example_msg -o $@
+ 
+TestSerial.class: TestSerial.java SerialRead.class
+	javac TestSerial.java
+ 
+include $(MAKERULES)
+The SerialReadAppC.nc:
+
+configuration SerialReadAppC {}
+implementation {
+  components SerialReadC as App;
+ 
+  components MainC;
+  App.Boot -> MainC.Boot;
+ 
+  components SerialActiveMessageC as AM;
+  App.Control -> AM;
+  App.Receive -> AM.Receive[AM_SERIAL_EXAMPLE_MSG];
+  App.Packet -> AM;
+ 
+  components LedsC;
+  App.Leds -> LedsC;
+}
+The SerialReadC.nc:
+
+#include "SerialExample.h"
+ 
+module SerialReadC {
+  uses interface SplitControl as Control;
+  uses interface Leds;
+  uses interface Boot;
+  uses interface Receive;
+  uses interface Packet;
+}
+implementation {
+ 
+  message_t packet;
+ 
+  bool locked = FALSE;
+  uint16_t counter = 0;
+ 
+  event void Boot.booted() {
+    call Control.start();
+  }
+ 
+  event message_t* Receive.receive(message_t* bufPtr, 
+				   void* payload, uint8_t len) {
+    if (len != sizeof(serial_example_msg_t)) {return bufPtr;}
+    else {
+      serial_example_msg_t* rcm = (serial_example_msg_t*)payload;
+      if (rcm->counter & 0x1) call Leds.led0On();
+      else call Leds.led0Off();
+ 
+      if (rcm->counter & 0x2) call Leds.led1On();
+      else call Leds.led1Off();
+ 
+      if (rcm->counter & 0x4) call Leds.led2On();
+      else call Leds.led2Off();
+ 
+      return bufPtr;
+    }
+  }
+ 
+  event void Control.startDone(error_t err) {
+    if (err == SUCCESS) {
+    }
+  }
+  event void Control.stopDone(error_t err) {}
+}
+Building, programming and sending
+To build everything and program the Z1 run:
+
+make z1 install
+Once the Z1 is programmed you can send packages running
+
+java TestSerial
+More information
+Modifying the java sdk
+To be able to use the -comm serial@/dev/ttyUSB0:z1 instead of :115200 (or any other platform name that uses 115200 as a baudrate like tmote or tinynode) you'll have to add this line to /opt/tinyos-2.1.1/support/sdk/java/net/tinyos/packet/BaudRate.java
+
+Platform.add(Platform.x, "z1",  115200);
+and run in the /opt/tinyos-2.1.1/support/sdk/java directory
+
+make tinyos.jar
+TinyOS Documentation
+Tinyos has a manual on Mote-PC serial communication. You can find it here
+
+Using GPIO
+This sample program will output switch between 0 and 3V every 5 seconds on the port 10 of the msp. This port is accessible through the JP1C interface of the z1, as the port 10 is wired to the connector placed more far away from the ground connector (the one with the golden square).
+
+The makefile:
+
+COMPONENT=GPIOAppC
+include $(MAKERULES)
+The GPIOAppC.nc
+
+configuration GPIOAppC {}
+implementation {
+  components MainC;
+  components GPIOC as App;
+  components LedsC;
+ 
+  components HplMsp430GeneralIOC as GeneralIOC;
+ 
+  components new Msp430GpioC() as GPIO;
+  GPIO -> GeneralIOC.Port10;
+  App.GPIO -> GPIO;
+ 
+  App.Boot -> MainC.Boot;
+ 
+  components new TimerMilliC() as TimerGPIO;
+  App.TimerGPIO -> TimerGPIO;
+ 
+}
+The GPIOC.nc
+
+module GPIOC {
+  uses interface Boot;
+  uses interface GeneralIO as GPIO;
+  uses interface Timer<TMilli> as TimerGPIO;
+}
+ 
+implementation {
+ 
+  event void Boot.booted() {
+    call GPIO.makeOutput();
+    call TimerGPIO.startPeriodic(5000);
+  }
+ 
+  event void TimerGPIO.fired() {
+    call GPIO.toggle();
+  }
+ 
+}
+Mashups using several devices
+Radio + Accelerometer
+Receiver App
+The receiver app is a modification of the RadioCountToLeds app from tinyOS, we've simply removed the timers that trigger the generation of messages.
+
+The Makefile:
+
+ 
+COMPONENT=RadioCountToLedsAppC
+include $(MAKERULES)
+The RadioCountToLedsAppC.nc:
+
+// $Id: RadioCountToLedsAppC.nc,v 1.4 2006/12/12 18:22:48 vlahan Exp $
+ 
+/*									tab:4
+ * "Copyright (c) 2000-2005 The Regents of the University  of California.  
+ * All rights reserved.
+ *
+ * Permission to use, copy, modify, and distribute this software and its
+ * documentation for any purpose, without fee, and without written agreement is
+ * hereby granted, provided that the above copyright notice, the following
+ * two paragraphs and the author appear in all copies of this software.
+ * 
+ * IN NO EVENT SHALL THE UNIVERSITY OF CALIFORNIA BE LIABLE TO ANY PARTY FOR
+ * DIRECT, INDIRECT, SPECIAL, INCIDENTAL, OR CONSEQUENTIAL DAMAGES ARISING OUT
+ * OF THE USE OF THIS SOFTWARE AND ITS DOCUMENTATION, EVEN IF THE UNIVERSITY OF
+ * CALIFORNIA HAS BEEN ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * 
+ * THE UNIVERSITY OF CALIFORNIA SPECIFICALLY DISCLAIMS ANY WARRANTIES,
+ * INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY
+ * AND FITNESS FOR A PARTICULAR PURPOSE.  THE SOFTWARE PROVIDED HEREUNDER IS
+ * ON AN "AS IS" BASIS, AND THE UNIVERSITY OF CALIFORNIA HAS NO OBLIGATION TO
+ * PROVIDE MAINTENANCE, SUPPORT, UPDATES, ENHANCEMENTS, OR MODIFICATIONS."
+ *
+ * Copyright (c) 2002-2003 Intel Corporation
+ * All rights reserved.
+ *
+ * This file is distributed under the terms in the attached INTEL-LICENSE     
+ * file. If you do not find these files, copies can be found by writing to
+ * Intel Research Berkeley, 2150 Shattuck Avenue, Suite 1300, Berkeley, CA, 
+ * 94704.  Attention:  Intel License Inquiry.
+ */
+ 
+#include "RadioCountToLeds.h"
+ 
+/**
+ * Configuration for the RadioCountToLeds application. RadioCountToLeds 
+ * maintains a 4Hz counter, broadcasting its value in an AM packet 
+ * every time it gets updated. A RadioCountToLeds node that hears a counter 
+ * displays the bottom three bits on its LEDs. This application is a useful 
+ * test to show that basic AM communication and timers work.
+ *
+ * @author Philip Levis
+ * @date   June 6 2005
+ */
+ 
+configuration RadioCountToLedsAppC {}
+implementation {
+  components MainC, RadioCountToLedsC as App, LedsC;
+  components new AMSenderC(AM_RADIO_COUNT_MSG);
+  components new AMReceiverC(AM_RADIO_COUNT_MSG);
+  components new TimerMilliC();
+  components ActiveMessageC;
+ 
+  App.Boot -> MainC.Boot;
+ 
+  App.Receive -> AMReceiverC;
+  App.AMSend -> AMSenderC;
+  App.AMControl -> ActiveMessageC;
+  App.Leds -> LedsC;
+  App.MilliTimer -> TimerMilliC;
+  App.Packet -> AMSenderC;
+}
+The RadioCountToLedsC.nc:
+
+// $Id: RadioCountToLedsC.nc,v 1.6 2008/06/24 05:32:31 regehr Exp $
+ 
+/*									tab:4
+ * "Copyright (c) 2000-2005 The Regents of the University  of California.  
+ * All rights reserved.
+ *
+ * Permission to use, copy, modify, and distribute this software and its
+ * documentation for any purpose, without fee, and without written agreement is
+ * hereby granted, provided that the above copyright notice, the following
+ * two paragraphs and the author appear in all copies of this software.
+ * 
+ * IN NO EVENT SHALL THE UNIVERSITY OF CALIFORNIA BE LIABLE TO ANY PARTY FOR
+ * DIRECT, INDIRECT, SPECIAL, INCIDENTAL, OR CONSEQUENTIAL DAMAGES ARISING OUT
+ * OF THE USE OF THIS SOFTWARE AND ITS DOCUMENTATION, EVEN IF THE UNIVERSITY OF
+ * CALIFORNIA HAS BEEN ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * 
+ * THE UNIVERSITY OF CALIFORNIA SPECIFICALLY DISCLAIMS ANY WARRANTIES,
+ * INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY
+ * AND FITNESS FOR A PARTICULAR PURPOSE.  THE SOFTWARE PROVIDED HEREUNDER IS
+ * ON AN "AS IS" BASIS, AND THE UNIVERSITY OF CALIFORNIA HAS NO OBLIGATION TO
+ * PROVIDE MAINTENANCE, SUPPORT, UPDATES, ENHANCEMENTS, OR MODIFICATIONS."
+ *
+ * Copyright (c) 2002-2003 Intel Corporation
+ * All rights reserved.
+ *
+ * This file is distributed under the terms in the attached INTEL-LICENSE     
+ * file. If you do not find these files, copies can be found by writing to
+ * Intel Research Berkeley, 2150 Shattuck Avenue, Suite 1300, Berkeley, CA, 
+ * 94704.  Attention:  Intel License Inquiry.
+ */
+ 
+#include "Timer.h"
+#include "RadioCountToLeds.h"
+ 
+/**
+ * Implementation of the RadioCountToLeds application. RadioCountToLeds 
+ * maintains a 4Hz counter, broadcasting its value in an AM packet 
+ * every time it gets updated. A RadioCountToLeds node that hears a counter 
+ * displays the bottom three bits on its LEDs. This application is a useful 
+ * test to show that basic AM communication and timers work.
+ *
+ * @author Philip Levis
+ * @date   June 6 2005
+ */
+ 
+module RadioCountToLedsC @safe() {
+  uses {
+    interface Leds;
+    interface Boot;
+    interface Receive;
+    interface AMSend;
+    interface Timer<TMilli> as MilliTimer;
+    interface SplitControl as AMControl;
+    interface Packet;
+  }
+}
+implementation {
+ 
+  message_t packet;
+ 
+  bool locked;
+  uint16_t counter = 0;
+ 
+  event void Boot.booted() {
+    call AMControl.start();
+  }
+ 
+  event void AMControl.startDone(error_t err) {
+    if (err == SUCCESS) {
+      call Leds.set(7);
+    }
+    else {
+      call AMControl.start();
+    }
+  }
+ 
+  event void AMControl.stopDone(error_t err) {
+    // do nothing
+  }
+ 
+  event void MilliTimer.fired() {
+    counter++;
+    dbg("RadioCountToLedsC", "RadioCountToLedsC: timer fired, counter is %hu.\n", counter);
+    if (locked) {
+      return;
+    }
+    else {
+      radio_count_msg_t* rcm = (radio_count_msg_t*)call Packet.getPayload(&packet, sizeof(radio_count_msg_t));
+      if (rcm == NULL) {
+	return;
+      }
+ 
+      rcm->counter = counter;
+      if (call AMSend.send(AM_BROADCAST_ADDR, &packet, sizeof(radio_count_msg_t)) == SUCCESS) {
+	dbg("RadioCountToLedsC", "RadioCountToLedsC: packet sent.\n", counter);
+	locked = TRUE;
+      }
+    }
+  }
+ 
+  event message_t* Receive.receive(message_t* bufPtr, 
+				   void* payload, uint8_t len) {
+    dbg("RadioCountToLedsC", "Received packet of length %hhu.\n", len);
+    if (len != sizeof(radio_count_msg_t)) {return bufPtr;}
+    else {
+      radio_count_msg_t* rcm = (radio_count_msg_t*)payload;
+      if (rcm->counter & 0x1) {
+	call Leds.led0On();
+      }
+      else {
+	call Leds.led0Off();
+      }
+      if (rcm->counter & 0x2) {
+	call Leds.led1On();
+      }
+      else {
+	call Leds.led1Off();
+      }
+      if (rcm->counter & 0x4) {
+	call Leds.led2On();
+      }
+      else {
+	call Leds.led2Off();
+      }
+      return bufPtr;
+    }
+  }
+ 
+  event void AMSend.sendDone(message_t* bufPtr, error_t error) {
+    if (&packet == bufPtr) {
+      locked = FALSE;
+    }
+  }
+ 
+}
+The RadioCountToLeds.h:
+
+/*
+ * "Copyright (c) 2004-2005 The Regents of the University  of California.  
+ * All rights reserved.
+ *
+ * Permission to use, copy, modify, and distribute this software and its
+ * documentation for any purpose, without fee, and without written agreement is
+ * hereby granted, provided that the above copyright notice, the following
+ * two paragraphs and the author appear in all copies of this software.
+ * 
+ * IN NO EVENT SHALL THE UNIVERSITY OF CALIFORNIA BE LIABLE TO ANY PARTY FOR
+ * DIRECT, INDIRECT, SPECIAL, INCIDENTAL, OR CONSEQUENTIAL DAMAGES ARISING OUT
+ * OF THE USE OF THIS SOFTWARE AND ITS DOCUMENTATION, EVEN IF THE UNIVERSITY OF
+ * CALIFORNIA HAS BEEN ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * 
+ * THE UNIVERSITY OF CALIFORNIA SPECIFICALLY DISCLAIMS ANY WARRANTIES,
+ * INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY
+ * AND FITNESS FOR A PARTICULAR PURPOSE.  THE SOFTWARE PROVIDED HEREUNDER IS
+ * ON AN "AS IS" BASIS, AND THE UNIVERSITY OF CALIFORNIA HAS NO OBLIGATION TO
+ * PROVIDE MAINTENANCE, SUPPORT, UPDATES, ENHANCEMENTS, OR MODIFICATIONS."
+ *
+ * Copyright (c) 2002-2003 Intel Corporation
+ * All rights reserved.
+ *
+ * This file is distributed under the terms in the attached INTEL-LICENSE     
+ * file. If you do not find these files, copies can be found by writing to
+ * Intel Research Berkeley, 2150 Shattuck Avenue, Suite 1300, Berkeley, CA, 
+ * 94704.  Attention:  Intel License Inquiry.
+ */
+ 
+#ifndef RADIO_COUNT_TO_LEDS_H
+#define RADIO_COUNT_TO_LEDS_H
+ 
+typedef nx_struct radio_count_msg {
+  nx_uint16_t counter;
+} radio_count_msg_t;
+ 
+enum {
+  AM_RADIO_COUNT_MSG = 6,
+};
+ 
+#endif
+Whe need to specify the nodeid if we want this program to work properly. To do so, the first receiver will need to be programed using
+
+make z1 install,2
+and the second whith:
+
+make z1 install,4
+Sender App
+The Makefile:
+
+COMPONENT=RadioAccelAppC
+include $(MAKERULES)
+The RadioAccelAppC.nc:
+
+#include "RadioCountToLeds.h"
+ 
+configuration RadioAccelAppC {}
+implementation {
+  components MainC, RadioAccelC as App, LedsC;
+  components new AMSenderC(AM_RADIO_COUNT_MSG);
+  components new AMReceiverC(AM_RADIO_COUNT_MSG);
+  components new TimerMilliC();
+  components ActiveMessageC;
+ 
+  App.Boot -> MainC.Boot;
+ 
+  App.AMSend -> AMSenderC;
+  App.AMControl -> ActiveMessageC;
+  App.Leds -> LedsC;
+  App.Packet -> AMSenderC;
+  components new ADXL345C();
+  App.IntSource -> ADXL345C.IntSource;
+  App.AccelControl -> ADXL345C.SplitControl;
+  App.IntAccel1 -> ADXL345C.Int1;
+  App.ADXLControl -> ADXL345C.ADXL345Control;
+  App.Axis -> ADXL345C.Register;
+  App.X -> ADXL345C.X;
+  App.Y -> ADXL345C.Y;
+ 
+  components UserButtonC;
+  App.Button -> UserButtonC;
+ 
+}
+The RacioAccelC.nc:
+
+#include "RadioCountToLeds.h"
+#include "ADXL345.h"
+#include "UserButton.h"
+ 
+module RadioAccelC @safe() {
+  uses {
+    interface Leds;
+    interface Boot;
+    interface AMSend;
+    interface SplitControl as AMControl;
+    interface Packet;
+    interface Read<uint8_t> as IntSource;  
+    interface Read<uint8_t> as Axis;
+    interface Read<uint16_t> as X;
+    interface Read<uint16_t> as Y;
+    interface Notify<adxlint_state_t> as IntAccel1;
+    interface ADXL345Control as ADXLControl;
+    interface SplitControl as AccelControl;
+    interface Notify<button_state_t> as Button;
+  }
+}
+implementation {
+ 
+  message_t packet;
+ 
+  bool locked;
+  uint16_t counter  = 0;
+  uint16_t counter1 = 0;
+ 
+  event void Boot.booted() {
+    call Button.enable();
+    call AMControl.start();
+  }
+ 
+  event void AMControl.startDone(error_t err) {
+    if (err == SUCCESS) {
+      call AccelControl.start();
+    }
+    else {
+      call AMControl.start();
+    }
+  }
+ 
+  event void Button.notify(button_state_t val) {
+  	if(val == BUTTON_RELEASED) {
+		counter=0;
+		if (locked) {
+		  return;
+		}
+		else {
+		  radio_count_msg_t* rcm = (radio_count_msg_t*)call Packet.getPayload(&packet, sizeof(radio_count_msg_t));
+		  if (rcm == NULL) {
+		    return;
+		  }
+		  rcm->counter = counter;
+		  if (call AMSend.send(AM_BROADCAST_ADDR, &packet, sizeof(radio_count_msg_t)) == SUCCESS) {
+		    locked = TRUE;
+		  }
+		}
+	} else {
+	}
+  }
+ 
+ 
+  event void IntAccel1.notify(adxlint_state_t val) {
+    call ADXLControl.setReadAddress(ADXL345_ACT_TAP_STATUS);
+    call Axis.read();
+  }
+ 
+ 
+  event void AccelControl.startDone(error_t err) {
+	if(err==SUCCESS)
+	{
+	  error_t e;
+	  e = call ADXLControl.setInterrups( ADXLINT_SINGLE_TAP ); 
+	}
+	else
+	{
+	  call Leds.led0On();
+	  call Leds.led1On();
+	  call Leds.led2On();
+	}
+  }
+ 
+  event void AMSend.sendDone(message_t* bufPtr, error_t error) {
+    if (&packet == bufPtr) {
+      locked = FALSE;
+    }
+  }
+ 
+  event void ADXLControl.setInterruptsDone(){
+	call ADXLControl.setIntMap(0);
+  }
+ 
+  event void ADXLControl.setIntMapDone(){
+	call IntAccel1.enable();	//this will enable the interruptions
+	call IntSource.read();		//this will clear the interruption
+  }
+ 
+  event void Axis.readDone(error_t result, uint8_t data){
+    if (data & 0x04)
+    { 
+      call X.read();
+    }
+    if (data & 0x02)
+    {
+      call Y.read();
+    }
+    if (data & 0x01)
+    {
+      call IntSource.read();	//this will clear the interruption
+    }
+  }
+ 
+  event void X.readDone(error_t result, uint16_t data){
+    counter ^= 0x7;
+    if (locked) {
+      return;
+    }
+    else {
+      radio_count_msg_t* rcm = (radio_count_msg_t*)call Packet.getPayload(&packet, sizeof(radio_count_msg_t));
+      if (rcm == NULL) {
+	return;
+      }
+      rcm->counter = counter;
+      if (call AMSend.send(2, &packet, sizeof(radio_count_msg_t)) == SUCCESS) {
+	locked = TRUE;
+      }
+    }
+    call Leds.led0Toggle();
+    call IntSource.read();	//this will clear the interruption
+  }
+ 
+  event void Y.readDone(error_t result, uint16_t data){
+    counter1 ^= 0x7;
+    if (locked) {
+      return;
+    }
+    else {
+      radio_count_msg_t* rcm = (radio_count_msg_t*)call Packet.getPayload(&packet, sizeof(radio_count_msg_t));
+      if (rcm == NULL) {
+	return;
+      }
+      rcm->counter = counter1;
+      if (call AMSend.send(4, &packet, sizeof(radio_count_msg_t)) == SUCCESS) {
+	locked = TRUE;
+      }
+    }
+    call Leds.led1Toggle();
+    call IntSource.read();	//this will clear the interruption
+  }
+ 
+  event void ADXLControl.setDurationDone() { }				//not used
+ 
+  event void ADXLControl.setWindowDone() { }				//not used
+ 
+  event void ADXLControl.setLatentDone() { }				//not used
+ 
+  event void ADXLControl.setRegisterDone() { }				//not used
+ 
+  event void ADXLControl.setRangeDone() { }				//not used
+ 
+  event void IntSource.readDone(error_t result, uint8_t data) { }	//not used
+ 
+  event void AccelControl.stopDone(error_t err) { }			//not used
+ 
+  event void AMControl.stopDone(error_t err) { }			//not used
+ 
+}
+Use the same RadioCountToLeds.h file than the receiver. To program the device we have to run:
+
+make z1 install
+
+Obtain a higher sampling rate with the ADXL345 or I2C sensor
+In /tos/platforms/z1/chips/msp430/usci/Z1UsciP.nc edit the ubr value to increase the clock frequency, keep in mind that the clock is driven by SMCLK which is sourced by the DCO running (normally) at 8MHz with /1 division, meaning that an ubr of 800 will provide a 10KHz clock (measured 9.8724KHz) and 80 will allow a 100KHz clock (measured 87.912KHz):
+
+  msp430_i2c_union_config_t msp430_i2c_z1_config = { {
+    ucmode  : 3,			/* i2c mode */
+    ucmst   : 1,			/* master */
+    ucmm    : 0,			/* single master */
+    ucsla10 : 0,			/* 7 bit slave */
+    uca10   : 0,			/* 7 bit us */
+    uctr    : 0,			/* rx mode to start */
+    ucssel  : 2,			/* smclk */
+    i2coa   : 1,			/* our address is 1 */
+    ucgcen  : 1,			/* respond to general call */
+    ubr     : 80,			/* smclk/2 */
+  } };
+The /tos/chips/adxl345/adxl345P.nc at the time this document was written has around line 787 the following line that can be commented out, if not present then it was already taken out in a future commit.
+
+for(tmp=0;tmp<0x8fff;tmp++);
+This will allow a sampling time of 0.711ms per axis measured with an ubr of 80, versus 4.8473ms with an ubr of 800.
+
+This test was performed with:
+
+msp430-gcc (GCC) 4.7.0 20120322 (mspgcc dev 20120716) TinyOS 2.1.2, rev. 98f3e84 "Merge pull request #175 from ppannuto/gitignore"
+
+
+Include C functions in nesC code
+You can embed C functions inside nesC code but there are cases when this is somewhat cumbersome and inefficient, instead it is possible to add C functions and libraries to nesC.
+
+In this example we will create a simple function that will increment a variable. First you have to create a proper C header file and declare the functions:
+
+
+hello.c
+
+#include <stdlib.h>
+#include "hello.h"
+ 
+uint8_t hello(uint8_t val) {
+  return val++;
+}
+hello.h
+
+#include <stdint.h>
+uint8_t hello(uint8_t val);
+Then add the path of the source files in the Makefile (see for example how it is done in /support/make/blip.extra)
+
+Makefile
+
+COMPONENT=HelloAppC
+CFLAGS += -DPRINTFUART_ENABLED
+PFLAGS+=$(HOME)/Hello/hello.c
+include $(MAKERULES)
+And in your code:
+
+HelloAppC.nc
+
+configuration HelloAppC { }
+ 
+implementation
+{
+  components MainC, HelloC as app;
+  components new TimerMilliC() as FriendlyTimer;
+ 
+  app -> MainC.Boot;
+  app.FriendlyTimer -> FriendlyTimer;
+}
+HelloC.nc
+
+#include "Timer.h"
+#include "hello.h"
+#include "PrintfUART.h"
+ 
+module HelloC {
+  uses interface Timer<TMilli> as FriendlyTimer;
+  uses interface Boot;
+}
+ 
+implementation{
+ 
+  uint8_t counter, increment = 0;
+ 
+  event void Boot.booted(){
+    printfUART_init();
+    call FriendlyTimer.startPeriodic(512L);
+  }
+ 
+  event void FriendlyTimer.fired(){
+    increment = hello(counter);
+    printfUART("Counter at %d\n", increment);
+    counter = increment;
+  }
+}
+
+C programming
+It's possible to program the Z1 without using tinyos at all.
+
+Led Blink
+In this example we'll program the Z1 with a very simple program that will make the blue led blink. To program it to the Z1 we only need to run make on the directory.
+
+If we take a look at the makefile we'll see that the process has a few steps:
+
+Compile the program into a msp executable
+msp430-gcc -0s -g -mmcu=msp430x2617 -o led.elf led.c
+Convert the executable into a ihex file
+msp430-objcopy --output-target=ihex led.elf  led.ihex
+Flash the Z1
+z1-bsl --z1 -c `motelist-z1 -c | cut -d, -f2 | head -n1` -r -e -I -p led.ihex
+Files
+led.c
+#include <io.h>
+ 
+void main(void)
+ 
+{
+        int i;
+ 
+        WDTCTL = WDTPW + WDTHOLD; // Stop WDT
+        for (i = 0; i < 0xfffe; i++);
+ 
+        P5DIR |= 0x70;          // Set led pin direction
+        P5OUT |= 0x70;          // Shut down leds
+ 
+        while(1) {
+                P5OUT ^= 0x20;                          // Toggle LED
+                for (i = 0; i < 0x4000; i++);           // SW Delay
+        }
+}
+Makefile
+CC=msp430-gcc
+ 
+all:
+        $(CC) -0s -g -mmcu=msp430x2617 -o led.elf led.c
+        msp430-objcopy --output-target=ihex led.elf  led.ihex
+        z1-bsl --z1 -c $(shell motelist-z1 -c | cut -d, -f2 | head -n1) -r -e -I -p led.ihex
+Led Blink using interruptions
+In this example we'll program the Z1 with a very simple program that will make the blue led blink every second using an interruption triggered by the watchdog. To program it to the Z1 we only need to run make on the directory.
+
+Files
+wdt.c
+#include <io.h>
+#include <signal.h>
+ 
+void main(void)
+{
+ 
+	WDTCTL = WDT_ADLY_1000;			// 1s timer
+	IE1 |= WDTIE;				// Enable WDT interrupt
+ 
+	P5DIR |= 0x70;				// Set led pin direction
+	P5OUT |= 0x70;				// Shut down leds
+ 
+	__bis_SR_register(LPM3_bits + GIE);	// Enter LPM3 w/interrupt
+ 
+}
+ 
+ 
+ 
+ 
+// Interrupt code
+ 
+interrupt (WDT_VECTOR) wdt_int(void)
+ 
+{
+	P5OUT ^= 0x20;                          // Toggle LED
+ 
+}
+Makefile
+CC=msp430-gcc
+ 
+all:
+        $(CC) -0s -g -mmcu=msp430x2617 -o wdt.elf wdt.c
+        msp430-objcopy --output-target=ihex wdt.elf  wdt.ihex
+        z1-bsl --z1 -c $(shell motelist-z1 -c | cut -d, -f2 | head -n1) -r -e -I -p wdt.ihex
+Printf using UART port
+It's possible to use the uART as a debug output. This sample program will output consecutive integers at 115200 bps
+
+Files
+print.c
+#include <io.h>
+#include <stdarg.h>
+#include <stdio.h>
+ 
+#define DEBUGBUF_SIZE 256
+#define printfUART(__format...) {      \
+    snprintf(debugbuf,DEBUGBUF_SIZE, __format);       \
+    writedebug();                      \
+}
+char debugbuf[DEBUGBUF_SIZE];
+ 
+void UARTPutChar(char c)
+{
+	if (c == '\n')
+		UARTPutChar('\r');
+ 
+	while (!(IFG2&UCA0TXIFG));
+		UCA0TXBUF = c;
+ 
+}
+ 
+void writedebug()
+{
+    uint16_t i = 0;
+ 
+    while (debugbuf[i] != '\0' && i < DEBUGBUF_SIZE)
+        UARTPutChar(debugbuf[i++]);
+}
+ 
+void main(void)
+ 
+{
+	uint16_t i,j;
+ 
+	WDTCTL = WDTPW + WDTHOLD; // Stop WDT
+ 
+	//check if calib tables are OK
+ 
+	if(CALBC1_8MHZ != 0xFF) {
+	  	DCOCTL = 0x00;
+	  	BCSCTL1 = CALBC1_8MHZ;                    //Set DCO to 8MHz
+	  	DCOCTL = CALDCO_8MHZ;    
+	} else { //start using reasonable values at 8 Mhz
+		DCOCTL = 0x00;
+		BCSCTL1 = 0x8D;
+		DCOCTL = 0x88;
+	}
+ 
+	//UART init
+	P3SEL |= 0x30;
+	UCA0CTL1 |= UCSSEL_2;
+	UCA0BR0 = 0x45;
+	UCA0BR1 = 0x00;
+	UCA0MCTL = UCBRS1 + UCBRS0;
+	UCA0CTL1 &= ~UCSWRST;
+ 
+	//Leds init
+	P5DIR |= 0x70;		// Set led pin direction
+	P5OUT |= 0x70;		// Shut down leds
+ 
+	while(1) {
+		P5OUT ^= 0x20;                          // Toggle LED
+		for (i = 0; i < 0xffff; i++);           // SW Delay
+		printfUART("%d\n",j);
+		j++;
+	}
+}
+Makefile
+CFLAGS=-O2 -mdata-64k
+CC=msp430-gcc
+ 
+all:
+	$(CC) -0s -g -mmcu=msp430x2617 -o print.elf print.c $(CFLAGS)
+	msp430-objcopy --output-target=ihex print.elf  print.ihex
+	z1-bsl --z1 -c /dev/ttyUSB0 -r -e -I -p print.ihex
+Categories: Z1 | Firmware | TinyOS
+page discussion view source history
+Log in
+navigation
+Back to main
+the z1 mote
+Z1 Features
+Starter Platform
+WSN Gateway
+Specifications
+Available sensors
+Accesories
+Online Store
+search
+   
+contiki support
+Install guide
+Contiki walktrough
+Projects and advance apps
+Custom drivers and test examples
+tinyos support
+Install guide
+Starter examples
+Advanced guide
+Useful Applications
+Custom drivers and test examples
+mansos support
+Install guide
+general guides and apps
+Miscellaneous guides
+z1 community
+Visit our webpage
+Join our forum
+News and events
+Browse Z1 files
+Z1 on twitter!
+Z1 Projects - Submit yours!
+assistance
+Contact us
+Help/FAQ
+toolbox
+What links here
+Related changes
+Special pages
+Printable version
+Permanent link
+Powered by MediaWikiGet zolertia at SourceForge.net. Fast, secure and Free Open Source software downloads
+This page was last modified on 17 April 2013, at 11:36. This page has been accessed 64,928 times. Privacy policy About Zolertia Disclaimers
