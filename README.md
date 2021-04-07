@@ -1,3 +1,2 @@
 # betazx93
-We've just started the repository 1%. 
-This has a long way to go. 
+Small project I made over the past 2 months.
